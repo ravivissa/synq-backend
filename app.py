@@ -4,6 +4,15 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from openai import OpenAI
 
+
+
+@app.get("/debug/env")
+def debug_env():
+    return {
+        "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
+        "model": os.getenv("OPENAI_MODEL", "not-set"),
+    }
+
 # Synq - minimal agent API for Voiceflow
 # Endpoints:
 #   GET  /health
@@ -66,3 +75,4 @@ def chat(req: ChatRequest):
         text = "I couldn’t generate a reply just now. Please try again."
 
     return ChatResponse(reply=text)
+
