@@ -10,7 +10,7 @@ from openai import OpenAI
 def debug_env():
     return {
         "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
-        "model": os.getenv("OPENAI_MODEL", "not-set"),
+       MODEL = "gpt-4o-mini"
     }
 
 # Synq - minimal agent API for Voiceflow
@@ -75,4 +75,5 @@ def chat(req: ChatRequest):
         text = "I couldn’t generate a reply just now. Please try again."
 
     return ChatResponse(reply=text)
+
 
