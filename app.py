@@ -1,67 +1,79 @@
 import os
 import re
-import sqlite3
-from typing import Dict, Optional
+from typing import Dict
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 from openai import OpenAI
+
+import psycopg
 
 app = FastAPI(title="Synq Backend")
 client = OpenAI()
 
 MODEL = "gpt-4o-mini"
 
-# --- Simple SQLite memory store ---
-DB_PATH = os.getenv("SYNQ_DB_PATH", "synq.db")
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS memory (
-        session_id TEXT NOT NULL,
-        key TEXT NOT NULL,
-        value TEXT NOT NULL,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (session_id, key)
-    )
-    """
-)
-conn.commit()
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set in this service. Add Railway Postgres and reference DATABASE_URL.")
+
+def get_conn():
+    return psycopg.connect(DATABASE_URL)
+
+def init_db():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory (
+                    session_id TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (session_id, key)
+                );
+                """
+            )
+        conn.commit()
+
+init_db()
 
 def set_memory(session_id: str, key: str, value: str) -> None:
-    conn.execute(
-        """
-        INSERT INTO memory(session_id, key, value)
-        VALUES(?, ?, ?)
-        ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
-        """,
-        (session_id, key, value),
-    )
-    conn.commit()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO memory(session_id, key, value)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (session_id, key)
+                DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+                """,
+                (session_id, key, value),
+            )
+        conn.commit()
 
 def get_memory(session_id: str) -> Dict[str, str]:
-    cur = conn.execute(
-        "SELECT key, value FROM memory WHERE session_id = ?",
-        (session_id,),
-    )
-    return {k: v for (k, v) in cur.fetchall()}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT key, value FROM memory WHERE session_id = %s;",
+                (session_id,),
+            )
+            rows = cur.fetchall()
+    return {k: v for (k, v) in rows}
 
-# --- Request/Response models ---
 class ChatRequest(BaseModel):
     session_id: str
     message: str
 
-# --- Lightweight “remember” parser (keeps it simple) ---
 def extract_memory_updates(text: str) -> Dict[str, str]:
     t = text.strip()
-
     patterns = [
         (r"^remember\s+my\s+office\s+is\s+(.+)$", "office_address"),
         (r"^remember\s+my\s+home\s+is\s+(.+)$", "home_address"),
         (r"^(?:remember\s+)?my\s+favorite\s+pizza\s+is\s+(.+)$", "fav_pizza_order"),
         (r"^(?:remember\s+)?my\s+favorite\s+pizza\s+restaurant\s+is\s+(.+)$", "fav_pizza_restaurant"),
     ]
-
     updates: Dict[str, str] = {}
     for pat, key in patterns:
         m = re.match(pat, t, flags=re.IGNORECASE)
@@ -79,14 +91,14 @@ def read_memory(session_id: str):
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    # 1) Save memory if user is telling you to remember
+    # Save memory updates
     updates = extract_memory_updates(req.message)
     saved_lines = []
     for k, v in updates.items():
         set_memory(req.session_id, k, v)
         saved_lines.append(f"{k} = {v}")
 
-    # 2) Load memory and inject into system context
+    # Load memory
     mem = get_memory(req.session_id)
     mem_text = "\n".join([f"- {k}: {v}" for k, v in mem.items()]) if mem else "(none)"
 
@@ -97,26 +109,17 @@ def chat(req: ChatRequest):
         f"User memory:\n{mem_text}\n"
     )
 
-    # 3) If user just saved memory, acknowledge quickly + continue
-    # (We still let the model respond to keep it natural.)
-    user_msg = req.message
-    if saved_lines:
-        user_msg = (
-            req.message
-            + "\n\n(You have successfully saved these memory fields: "
-            + "; ".join(saved_lines)
-            + ")"
-        )
-
     resp = client.responses.create(
         model=MODEL,
         input=[
             {"role": "system", "content": system},
-            {"role": "user", "content": user_msg},
+            {"role": "user", "content": req.message},
         ],
     )
 
     return {"reply": (resp.output_text or "").strip(), "memory_saved": saved_lines}
+
+
 
 
 
