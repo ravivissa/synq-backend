@@ -1,3 +1,7 @@
 fastapi
 uvicorn
 openai
+pydantic
+psycopg[binary]
+
+
