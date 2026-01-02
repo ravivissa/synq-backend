@@ -205,3 +205,26 @@ def chat(req: ChatRequest):
         "memory_saved": memory_saved,
         "plan": plan,  # <-- THIS is the action plan JSON (or null)
     }
+class ConfirmRequest(BaseModel):
+    session_id: str
+    plan: dict
+    user_confirmed: bool
+
+@app.post("/confirm")
+def confirm(req: ConfirmRequest):
+    if not req.user_confirmed:
+        return {"status": "cancelled", "message": "Okay, cancelled."}
+
+    action = req.plan.get("action")
+    args = req.plan.get("args", {})
+
+    # For now: just return what to execute (Voiceflow/Make will do the real call)
+    return {
+        "status": "approved",
+        "execute": {
+            "action": action,
+            "args": args
+        },
+        "message": "Confirmed. I’m ready to execute this action."
+    }
+
